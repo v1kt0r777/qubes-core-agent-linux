@@ -50,6 +50,10 @@ struct _connection_info {
     int fd;  /* socket to process handling the data (wait for EOF here) */
     int connect_domain;
     int connect_port;
+    /* whether to send MSG_CONNECTION_TERMINATED packet at the end; it is only
+     * needed when matching qrexec-daemon allocated the port, not the other
+     * side of VM-VM connection */
+    int send_connection_terminated;
 };
 
 /* structure describing a single request waiting for qubes.WaitForSession to
@@ -393,7 +397,8 @@ int try_fork_server(int type, int connect_domain, int connect_port,
 }
 
 
-void register_vchan_connection(pid_t pid, int fd, int domain, int port)
+void register_vchan_connection(pid_t pid, int fd, int domain, int port,
+        int send_connection_terminated)
 {
     int i;
 
@@ -403,6 +408,8 @@ void register_vchan_connection(pid_t pid, int fd, int domain, int port)
             connection_info[i].fd = fd;
             connection_info[i].connect_domain = domain;
             connection_info[i].connect_port = port;
+            connection_info[i].send_connection_terminated =
+                send_connection_terminated;
             return;
         }
     }
@@ -641,7 +648,7 @@ void handle_server_exec_request_do(int type, int connect_domain, int connect_por
                 cmdline, cmdline_len);
         if (child_socket >= 0) {
             register_vchan_connection(-1, child_socket,
-                    params.connect_domain, params.connect_port);
+                    params.connect_domain, params.connect_port, 1);
             return;
         }
     }
@@ -659,9 +666,13 @@ void handle_server_exec_request_do(int type, int connect_domain, int connect_por
         /* Register connection even if there was an error sending params to
          * qrexec-client-vm. This way the mainloop will clean the things up
          * (close socket, send MSG_CONNECTION_TERMINATED) when qrexec-client-vm
-         * will close the socket (terminate itself). */
+         * will close the socket (terminate itself).
+         *
+         * Send MSG_CONNECTION_TERMINATED only if the other end is dom0,
+         * otherwise it is responsibility of the other qrexec-agent */
         register_vchan_connection(-1, client_fd,
-                params.connect_domain, params.connect_port);
+                params.connect_domain, params.connect_port,
+                params.connect_domain == 0);
         return;
     }
 
@@ -671,7 +682,7 @@ void handle_server_exec_request_do(int type, int connect_domain, int connect_por
             cmdline, cmdline_len);
 
     register_vchan_connection(child_agent, -1,
-            params.connect_domain, params.connect_port);
+            params.connect_domain, params.connect_port, 1);
 }
 
 void handle_service_refused(struct msg_header *hdr)
@@ -741,15 +752,18 @@ void release_connection(int id) {
     struct msg_header hdr;
     struct exec_params params;
 
-    hdr.type = MSG_CONNECTION_TERMINATED;
-    hdr.len = sizeof(struct exec_params);
-    params.connect_domain = connection_info[id].connect_domain;
-    params.connect_port = connection_info[id].connect_port;
-    if (libvchan_send(ctrl_vchan, &hdr, sizeof(hdr)) < 0)
-        handle_vchan_error("send");
-    if (libvchan_send(ctrl_vchan, &params, sizeof(params)) < 0)
-        handle_vchan_error("send");
+    if (connection_info[id].send_connection_terminated) {
+        hdr.type = MSG_CONNECTION_TERMINATED;
+        hdr.len = sizeof(struct exec_params);
+        params.connect_domain = connection_info[id].connect_domain;
+        params.connect_port = connection_info[id].connect_port;
+        if (libvchan_send(ctrl_vchan, &hdr, sizeof(hdr)) < 0)
+            handle_vchan_error("send");
+        if (libvchan_send(ctrl_vchan, &params, sizeof(params)) < 0)
+            handle_vchan_error("send");
+    }
     connection_info[id].pid = 0;
+    connection_info[id].fd = -1;
 }
 
 void reap_children()

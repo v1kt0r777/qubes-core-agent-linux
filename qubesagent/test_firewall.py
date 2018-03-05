@@ -1,3 +1,5 @@
+# pylint: skip-file
+
 import logging
 import operator
 from unittest import TestCase

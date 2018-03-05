@@ -21,29 +21,38 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 #
+
+'''qubes-firewall service code'''
+
 import logging
 import os
 import socket
 import subprocess
-from distutils import spawn
+import sys
+import signal
+from distutils import spawn  # pylint: disable=no-name-in-module
 
 import daemon
 
 import qubesdb
-import sys
-
-import signal
 
 
 class RuleParseError(Exception):
+    '''Rule parsing failed - syntax error'''
     pass
 
 
 class RuleApplyError(Exception):
+    '''Rule apply failed - syntax correct, runtime error'''
     pass
 
 
 class FirewallWorker(object):
+    '''Base class for qubes-firewall service
+
+    This class provide basic functionality. Specific class should implement
+    actual rules enforcement (using iptables, nftables or else)
+    '''
     def __init__(self):
         self.terminate_requested = False
         self.qdb = qubesdb.QubesDB()
@@ -62,20 +71,22 @@ class FirewallWorker(object):
         '''Apply rules in given source address'''
         raise NotImplementedError
 
-    def run_firewall_dir(self):
+    @staticmethod
+    def run_firewall_dir():
         '''Run scripts dir contents, before user script'''
         script_dir_paths = ['/etc/qubes/qubes-firewall.d',
                       '/rw/config/qubes-firewall.d']
         for script_dir_path in script_dir_paths:
-           if not os.path.isdir(script_dir_path):
-               continue
-           for d_script in sorted(os.listdir(script_dir_path)):
-               d_script_path = os.path.join(script_dir_path, d_script)
-               if os.path.isfile(d_script_path) and \
-                       os.access(d_script_path, os.X_OK):
-                   subprocess.call([d_script_path])
+            if not os.path.isdir(script_dir_path):
+                continue
+            for d_script in sorted(os.listdir(script_dir_path)):
+                d_script_path = os.path.join(script_dir_path, d_script)
+                if os.path.isfile(d_script_path) and \
+                        os.access(d_script_path, os.X_OK):
+                    subprocess.call([d_script_path])
 
-    def run_user_script(self):
+    @staticmethod
+    def run_user_script():
         '''Run user script in /rw/config'''
         user_script_path = '/rw/config/qubes-firewall-user-script'
         if os.path.isfile(user_script_path) and \
@@ -104,13 +115,16 @@ class FirewallWorker(object):
         return rules
 
     def list_targets(self):
+        '''List target addresses for which firewall rules are defined'''
         return set(t.split('/')[2] for t in self.qdb.list('/qubes-firewall/'))
 
     @staticmethod
     def is_ip6(addr):
+        '''Check if IP address is IPv6'''
         return addr.count(':') > 0
 
     def log_error(self, msg):
+        '''Log an error, and display notification to the user (if possible)'''
         self.log.error(msg)
         subprocess.call(
             ['notify-send', '-t', '3000', msg],
@@ -118,6 +132,12 @@ class FirewallWorker(object):
         )
 
     def handle_addr(self, addr):
+        '''Handle rules for given target address.
+
+        This function use :py:meth:`apply_rules`
+        implemented in subclasses to actually apply rules loaded with
+        :py:meth:`read_rules`.
+        '''
         try:
             rules = self.read_rules(addr)
             self.apply_rules(addr, rules)
@@ -141,6 +161,7 @@ class FirewallWorker(object):
 
     @staticmethod
     def dns_addresses(family=None):
+        '''Load addresses of DNS servers'''
         with open('/etc/resolv.conf') as resolv:
             for line in resolv.readlines():
                 line = line.strip()
@@ -151,6 +172,7 @@ class FirewallWorker(object):
                         yield line.split(' ')[1]
 
     def main(self):
+        '''main function of the qubes-firewall service'''
         self.terminate_requested = False
         self.init()
         self.run_firewall_dir()
@@ -174,10 +196,12 @@ class FirewallWorker(object):
         self.cleanup()
 
     def terminate(self):
+        '''Request service to be terminated'''
         self.terminate_requested = True
 
 
 class IptablesWorker(FirewallWorker):
+    '''qubes-firewall worker using iptables for rules enforcement'''
     supported_rule_opts = ['action', 'proto', 'dst4', 'dst6', 'dsthost',
         'dstports', 'specialtarget', 'icmptype']
 
@@ -194,6 +218,7 @@ class IptablesWorker(FirewallWorker):
         return 'qbs-' + addr.replace('.', '-').replace(':', '-')[-20:]
 
     def run_ipt(self, family, args, **kwargs):
+        '''Run iptables or ip6tables based on address family (4, 6)'''
         # pylint: disable=no-self-use
         if family == 6:
             subprocess.check_call(['ip6tables'] + args, **kwargs)
@@ -201,6 +226,7 @@ class IptablesWorker(FirewallWorker):
             subprocess.check_call(['iptables'] + args, **kwargs)
 
     def run_ipt_restore(self, family, args):
+        '''Run ip6?tables-restore, based on address family (4, 6)'''
         # pylint: disable=no-self-use
         if family == 6:
             return subprocess.Popen(['ip6tables-restore'] + args,
@@ -359,13 +385,15 @@ class IptablesWorker(FirewallWorker):
             raise RuleApplyError('\'iptables -F {}\' failed: {}'.format(
                 chain, e.output))
 
-    def apply_rules(self, source, rules):
-        if self.is_ip6(source):
-            self.apply_rules_family(source, rules, 6)
+    def apply_rules(self, source_addr, rules):
+        '''Apply rules using appropriate address family of *source* address'''
+        if self.is_ip6(source_addr):
+            self.apply_rules_family(source_addr, rules, 6)
         else:
-            self.apply_rules_family(source, rules, 4)
+            self.apply_rules_family(source_addr, rules, 4)
 
     def init(self):
+        '''Initialize appropriate iptables chains'''
         # make sure 'QBS_FORWARD' chain exists - should be created before
         # starting qubes-firewall
         try:
@@ -378,6 +406,7 @@ class IptablesWorker(FirewallWorker):
             sys.exit(1)
 
     def cleanup(self):
+        '''Cleanup before service exit'''
         for family in (4, 6):
             self.run_ipt(family, ['-F', 'QBS-FORWARD'])
             for chain in self.chains[family]:
@@ -386,6 +415,7 @@ class IptablesWorker(FirewallWorker):
 
 
 class NftablesWorker(FirewallWorker):
+    '''qubes-firewall worker using nftables for rules enforcement'''
     supported_rule_opts = ['action', 'proto', 'dst4', 'dst6', 'dsthost',
         'dstports', 'specialtarget', 'icmptype']
 
@@ -402,6 +432,7 @@ class NftablesWorker(FirewallWorker):
         return 'qbs-' + addr.replace('.', '-').replace(':', '-')
 
     def run_nft(self, nft_input):
+        '''Run nft tool'''
         # pylint: disable=no-self-use
         p = subprocess.Popen(['nft', '-f', '/dev/stdin'],
             stdin=subprocess.PIPE,
@@ -564,13 +595,16 @@ class NftablesWorker(FirewallWorker):
 
         self.run_nft(self.prepare_rules(chain, rules, family))
 
-    def apply_rules(self, source, rules):
-        if self.is_ip6(source):
-            self.apply_rules_family(source, rules, 6)
+    def apply_rules(self, source_addr, rules):
+        '''Apply rules using appropriate address family, depending on
+        *source* address'''
+        if self.is_ip6(source_addr):
+            self.apply_rules_family(source_addr, rules, 6)
         else:
-            self.apply_rules_family(source, rules, 4)
+            self.apply_rules_family(source_addr, rules, 4)
 
     def init(self):
+        '''Initialize nftables table'''
         # make sure 'QBS_FORWARD' chain exists - should be created before
         # starting qubes-firewall
         nft_init = (
@@ -587,6 +621,7 @@ class NftablesWorker(FirewallWorker):
         self.run_nft(nft_init)
 
     def cleanup(self):
+        '''Cleanup before service exit'''
         nft_cleanup = (
             'delete table ip qubes-firewall\n'
             'delete table ip6 qubes-firewall\n'
@@ -595,6 +630,7 @@ class NftablesWorker(FirewallWorker):
 
 
 def main():
+    '''Main service function'''
     if spawn.find_executable('nft'):
         worker = NftablesWorker()
     else:

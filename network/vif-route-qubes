@@ -32,6 +32,17 @@ if "iptables-restore" --help 2>&1 | grep -q wait=; then
     ipt_arg=--wait
 fi
 
+# wait for the interface to appear (workaround for QubesOS/qubes-issues#4446)
+timeout=50
+# shellcheck disable=SC2154
+while [ "$command" = "online" ] && \
+          ! [ -e "/sys/class/net/${vif}" ] && \
+          [ "$timeout" -gt 0 ]; do
+    echo "Waiting for $vif" >&2
+    sleep 0.1
+    timeout=$((timeout - 1))
+done
+
 # shellcheck disable=SC2154
 if [ "${ip}" ]; then
     # get first IPv4 and first IPv6

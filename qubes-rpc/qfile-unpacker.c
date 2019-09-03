@@ -20,8 +20,12 @@ int prepare_creds_return_uid(const char *username)
     const struct passwd *pwd;
     pwd = getpwnam(username);
     if (!pwd) {
-        perror("getpwnam");
-        exit(1);
+        // Then try UID
+        pwd = getpwuid(atoi(username));
+        if (!pwd) {
+            perror("getpwnam");
+            exit(1);
+        }
     }
     setenv("HOME", pwd->pw_dir, 1);
     setenv("USER", username, 1);
@@ -34,7 +38,7 @@ int prepare_creds_return_uid(const char *username)
     return pwd->pw_uid;
 }
 
-int main(int argc __attribute((__unused__)), char ** argv __attribute__((__unused__)))
+int main(int argc, char ** argv)
 {
     char *incoming_dir;
     int uid, ret;
@@ -42,18 +46,32 @@ int main(int argc __attribute((__unused__)), char ** argv __attribute__((__unuse
     const char *remote_domain;
     char *procdir_path;
     int procfs_fd;
+    int i;
 
-    uid = prepare_creds_return_uid("user");
 
-    remote_domain = getenv("QREXEC_REMOTE_DOMAIN");
-    if (!remote_domain) {
-        gui_fatal("Cannot get remote domain name");
-        exit(1);
+    if (argc >= 3) {
+        uid = prepare_creds_return_uid(argv[1]);
+        incoming_dir = argv[2];
+    } else {
+        uid = prepare_creds_return_uid("user");
+        remote_domain = getenv("QREXEC_REMOTE_DOMAIN");
+        if (!remote_domain) {
+            gui_fatal("Cannot get remote domain name");
+            exit(1);
+        }
+        mkdir(INCOMING_DIR_ROOT, 0700);
+        if (asprintf(&incoming_dir, "%s/%s", INCOMING_DIR_ROOT, remote_domain) < 0)
+            gui_fatal("Error allocating memory");
+        mkdir(incoming_dir, 0700);
     }
-    mkdir(INCOMING_DIR_ROOT, 0700);
-    if (asprintf(&incoming_dir, "%s/%s", INCOMING_DIR_ROOT, remote_domain) < 0)
-        gui_fatal("Error allocating memory");
-    mkdir(incoming_dir, 0700);
+
+    for (i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0)
+            set_verbose(1);
+        else
+            gui_fatal("Invalid option %s", argv[i]);
+    }
+
     if (chdir(incoming_dir))
         gui_fatal("Error chdir to %s", incoming_dir);
 

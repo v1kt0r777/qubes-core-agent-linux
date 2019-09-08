@@ -272,6 +272,8 @@ install-common: install-doc
 	install -m 0755 qubes-rpc/qubes.WaitForSession $(DESTDIR)/etc/qubes-rpc
 	install -m 0755 qubes-rpc/qubes.DetachPciDevice $(DESTDIR)/etc/qubes-rpc
 	install -m 0755 qubes-rpc/qubes.{Backup,Restore} $(DESTDIR)/etc/qubes-rpc
+	install -m 0755 qubes-rpc/qubes.RegisterBackupLocation $(DESTDIR)/etc/qubes-rpc
+	install -m 0755 qubes-rpc/qubes.RestoreById $(DESTDIR)/etc/qubes-rpc
 	install -m 0755 qubes-rpc/qubes.Select{File,Directory} $(DESTDIR)/etc/qubes-rpc
 	install -m 0755 qubes-rpc/qubes.GetImageRGBA $(DESTDIR)/etc/qubes-rpc
 	install -m 0755 qubes-rpc/qubes.SetDateTime $(DESTDIR)/etc/qubes-rpc
